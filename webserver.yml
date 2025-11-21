@@ -1,0 +1,204 @@
+---
+# ============================================================================
+# Ansible Playbook: Web Server Configuration
+# ============================================================================
+# Description: Installs and configures Apache2 or Nginx on Ubuntu/Debian hosts
+# Author: Ansible Automation
+# Date: 2025-11-17
+# ============================================================================
+
+- name: Configure Web Servers
+  hosts: webservers
+  become: yes
+  gather_facts: yes
+  vars:
+      # Default values (used when inventory does not specify overrides)
+      default_web_server: nginx
+      default_http_port: 80
+      default_https_port: 443
+
+      # Web root directories
+      web_root:
+        nginx: /var/www/html
+        apache2: /var/www/html
+
+      # Service names
+      web_service:
+        nginx: nginx
+        apache2: apache2
+
+      # Package names
+      web_package:
+        nginx: nginx
+        apache2: apache2
+
+  tasks:
+    # ========================================================================
+    # SECTION 1: System Update and Package Installation
+    # ========================================================================
+
+    - name: Determine effective web configuration
+      set_fact:
+        effective_web_server: "{{ web_server | default(default_web_server) }}"
+        effective_http_port: "{{ http_port | default(default_http_port) }}"
+        effective_https_port: "{{ https_port | default(default_https_port) }}"
+      tags:
+        - setup
+        - packages
+        - firewall
+        - config
+
+    - name: Update apt cache
+      apt:
+        update_cache: yes
+        cache_valid_time: 3600
+      tags:
+        - setup
+        - packages
+
+    - name: Install web server package
+      apt:
+        name: "{{ web_package[effective_web_server] }}"
+        state: present
+      notify:
+        - Restart web server
+      tags:
+        - setup
+        - packages
+
+    # ========================================================================
+    # SECTION 2: Firewall Configuration
+    # ========================================================================
+
+    - name: Install UFW firewall
+      apt:
+        name: ufw
+        state: present
+      tags:
+        - firewall
+
+    - name: Configure UFW to allow SSH (to prevent lockout)
+      community.general.ufw:
+        rule: allow
+        port: '22'
+        proto: tcp
+      tags:
+        - firewall
+
+    - name: Configure UFW to allow HTTP traffic
+      community.general.ufw:
+        rule: allow
+        port: "{{ effective_http_port }}"
+        proto: tcp
+      tags:
+        - firewall
+
+    - name: Configure UFW to allow HTTPS traffic
+      community.general.ufw:
+        rule: allow
+        port: "{{ effective_https_port }}"
+        proto: tcp
+      tags:
+        - firewall
+
+    - name: Enable UFW firewall
+      community.general.ufw:
+        state: enabled
+      tags:
+        - firewall
+
+    # ========================================================================
+    # SECTION 3: Web Server Configuration
+    # ========================================================================
+
+    - name: Ensure web root directory exists
+      file:
+        path: "{{ web_root[effective_web_server] }}"
+        state: directory
+        owner: www-data
+        group: www-data
+        mode: '0755'
+      tags:
+        - config
+
+    - name: Deploy custom HTML landing page
+      template:
+        src: files/index.html
+        dest: "{{ web_root[effective_web_server] }}/index.html"
+        owner: www-data
+        group: www-data
+        mode: '0644'
+      notify:
+        - Reload web server
+      tags:
+        - deploy
+        - content
+
+    - name: Ensure web server service is running
+      systemd:
+        name: "{{ web_service[effective_web_server] }}"
+        state: started
+        enabled: yes
+      tags:
+        - service
+
+    - name: Ensure web server is enabled at boot
+      systemd:
+        name: "{{ web_service[effective_web_server] }}"
+        enabled: yes
+      tags:
+        - service
+
+    # ========================================================================
+    # SECTION 4: Verification
+    # ========================================================================
+
+    - name: Verify web server is listening on HTTP port
+      wait_for:
+        port: "{{ effective_http_port }}"
+        timeout: 10
+        msg: "Web server is not listening on port {{ effective_http_port }}"
+      tags:
+        - verify
+
+    - name: Display deployment information
+      debug:
+        msg:
+          - "==========================================="
+          - "Web Server Deployment Complete!"
+          - "==========================================="
+          - "Host: {{ ansible_hostname }}"
+          - "IP Address: {{ ansible_default_ipv4.address | default('N/A') }}"
+          - "Web Server: {{ effective_web_server }}"
+          - "Service: {{ web_service[effective_web_server] }}"
+          - "HTTP Port: {{ effective_http_port }}"
+          - "HTTPS Port: {{ effective_https_port }}"
+          - "Web Root: {{ web_root[effective_web_server] }}"
+          - "==========================================="
+          - "Access your server at: http://{{ ansible_default_ipv4.address | default(ansible_hostname) }}"
+          - "==========================================="
+      tags:
+        - verify
+
+  # ==========================================================================
+  # HANDLERS: Service Management
+  # ==========================================================================
+
+  handlers:
+    - name: Restart web server
+      systemd:
+        name: "{{ web_service[effective_web_server] }}"
+        state: restarted
+      listen: "Restart web server"
+
+    - name: Reload web server
+      systemd:
+        name: "{{ web_service[effective_web_server] }}"
+        state: reloaded
+      listen: "Reload web server"
+
+    - name: Check web server status
+      systemd:
+        name: "{{ web_service[effective_web_server] }}"
+        state: started
+      listen: "Check web server status"
